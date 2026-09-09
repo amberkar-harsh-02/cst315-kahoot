@@ -1,0 +1,13 @@
+#question_banner {
+    display:flex;
+    justify-content: center;
+    align-items: center;
+    height: 75px;
+    width: 100%; 
+    text-align: center;
+    font-weight: bold;
+    border: 5px;
+    background-color:grey;
+    font-size:large;
+    font-style:italic;
+}
