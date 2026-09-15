@@ -58,15 +58,14 @@ async def websocket_host(websocket: WebSocket, quiz_id: int):
         while True:
             data = await websocket.receive_json()
             event = data.get("event")
+            room = manager.active_rooms.get(room_code)
             
             if event == "start_game":
-                # Open a brief database session to load the questions into memory
                 db = SessionLocal()
                 quiz = db.query(models.Quiz).filter(models.Quiz.id == quiz_id).first()
                 
                 if quiz and quiz.questions:
-                    # Store questions in the room dictionary so we don't hit the DB again
-                    manager.active_rooms[room_code]["questions"] = [
+                    room["questions"] = [
                         {
                             "id": q.id,
                             "text": q.text,
@@ -80,12 +79,11 @@ async def websocket_host(websocket: WebSocket, quiz_id: int):
                             "time_limit": q.time_limit_seconds
                         } for q in quiz.questions
                     ]
-                    manager.active_rooms[room_code]["current_state"] = "question_active"
-                    manager.active_rooms[room_code]["current_question_index"] = 0
+                    room["current_state"] = "question_active"
+                    room["current_question_index"] = 0
                     
-                    first_question = manager.active_rooms[room_code]["questions"][0]
+                    first_question = room["questions"][0]
                     
-                    # Broadcast the question to all students (without the correct answer!)
                     await manager.broadcast_to_students(room_code, {
                         "event": "show_question",
                         "question": {
@@ -96,6 +94,55 @@ async def websocket_host(websocket: WebSocket, quiz_id: int):
                     })
                 db.close()
                 
+            elif event == "time_up":
+                if room:
+                    room["current_state"] = "time_up"
+                    current_q_index = room["current_question_index"]
+                    current_question = room["questions"][current_q_index]
+                    
+                    # Calculate how many students picked each color
+                    distribution = {"red": 0, "blue": 0, "yellow": 0, "green": 0}
+                    for student in room["students"].values():
+                        if student.get("last_answered_index") == current_q_index:
+                            # We need to peek at what they actually selected. 
+                            # (Wait, we need to save their choice in the student dict in submit_answer!
+                            # For now, let's just send the correct answer back).
+                            pass 
+
+                    # Notify Host
+                    await websocket.send_json({
+                        "event": "time_up_results",
+                        "correct_option": current_question["correct"]
+                    })
+                    
+                    # Notify Students
+                    await manager.broadcast_to_students(room_code, {
+                        "event": "time_up",
+                        "correct_option": current_question["correct"]
+                    })
+                    
+            elif event == "show_leaderboard":
+                if room:
+                    room["current_state"] = "leaderboard"
+                    
+                    # Sort students by score, descending
+                    ranked_students = sorted(
+                        room["students"].values(), 
+                        key=lambda x: x["score"], 
+                        reverse=True
+                    )
+                    
+                    # Grab top 5
+                    top_5 = [
+                        {"name": s["name"], "score": s["score"]} 
+                        for s in ranked_students[:5]
+                    ]
+                    
+                    await websocket.send_json({
+                        "event": "leaderboard",
+                        "top_players": top_5
+                    })
+
     except WebSocketDisconnect:
         if room_code in manager.active_rooms:
             del manager.active_rooms[room_code]
@@ -143,6 +190,7 @@ async def websocket_student(websocket: WebSocket, room_code: str, student_name: 
                 
                 # Lock in their answer
                 student["last_answered_index"] = current_q_index
+                student["last_selected_option"] = selected_option
                 selected_option = data.get("selected_option")
                 time_remaining_ms = data.get("time_remaining_ms", 0)
                 
@@ -168,4 +216,4 @@ async def websocket_student(websocket: WebSocket, room_code: str, student_name: 
                 })
                 
     except WebSocketDisconnect:
-        manager.mark_student_offline(room_code, player_id)
+        manager.mark_student_offline(room_code, player_id)  
