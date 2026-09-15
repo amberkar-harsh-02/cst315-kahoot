@@ -1,7 +1,8 @@
-from fastapi import FastAPI, WebSocket, Depends, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException
 from sqlalchemy.orm import Session
 from database import engine, SessionLocal
 import models, schemas
+from game_manager import manager
 
 # Initialize database tables
 models.Base.metadata.create_all(bind=engine)
@@ -46,8 +47,51 @@ def create_question_for_quiz(quiz_id: int, question: schemas.QuestionCreate, db:
     db.refresh(db_question)
     return db_question
 
-@app.websocket("/ws/test")
-async def websocket_test(websocket: WebSocket):
+@app.websocket("/ws/host/{quiz_id}")
+async def websocket_host(websocket: WebSocket, quiz_id: int):
+    """Endpoint for the TA to start a game and host the lobby."""
     await websocket.accept()
-    await websocket.send_text("WebSocket connection successful!")
-    await websocket.close()
+    
+    # Generate the 6-digit hex code
+    room_code = manager.create_room(quiz_id, websocket)
+    
+    # Send the code back to the TA's screen so they can display it to the class
+    await websocket.send_json({"event": "room_created", "room_code": room_code})
+    
+    try:
+        while True:
+            # The host connection stays open here waiting for TA commands (like "start_game")
+            data = await websocket.receive_json()
+            # We will add the game state machine logic here in the next step
+    except WebSocketDisconnect:
+        # If the TA closes the browser, we clean up the room
+        if room_code in manager.active_rooms:
+            del manager.active_rooms[room_code]
+
+
+@app.websocket("/ws/student/{room_code}")
+async def websocket_student(websocket: WebSocket, room_code: str, student_name: str):
+    """Endpoint for students to join a room using the 6-digit code."""
+    await websocket.accept()
+    
+    player_id = manager.add_student(room_code, student_name, websocket)
+    
+    if not player_id:
+        await websocket.send_json({"error": "Invalid room code or room no longer exists."})
+        await websocket.close()
+        return
+
+    # Acknowledge the connection and give the student their recovery ID
+    await websocket.send_json({"event": "join_success", "player_id": player_id})
+    
+    # Instantly notify the TA's screen that a new student joined
+    host_ws = manager.active_rooms[room_code]["host_ws"]
+    await host_ws.send_json({"event": "player_joined", "student_name": student_name})
+    
+    try:
+        while True:
+            # The student connection stays open here waiting to submit answers
+            data = await websocket.receive_json()
+    except WebSocketDisconnect:
+        # If the student's Wi-Fi drops, keep their score but mark them offline
+        manager.mark_student_offline(room_code, player_id)
