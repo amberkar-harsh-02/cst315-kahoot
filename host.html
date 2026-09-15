@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CST 315 Host Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        /* A few specific styles for the host dashboard */
+        .dashboard-container { max-width: 800px; margin: 2rem auto; text-align: center; }
+        .pin-display { font-size: 4rem; font-weight: bold; letter-spacing: 5px; margin: 1rem 0; color: #002244; }
+        .student-list { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 1rem; }
+        .student-badge { background: #eee; padding: 10px 15px; border-radius: 5px; font-weight: bold; }
+        .control-btn { padding: 15px 30px; font-size: 1.2rem; cursor: pointer; margin: 5px; }
+    </style>
+</head>
+<body>
+    <div class="dashboard-container">
+        <!-- SETUP SCREEN -->
+        <div id="setup_screen" class="screen">
+            <h2>Launch Quiz</h2>
+            <input type="number" id="quiz_id_input" value="1" placeholder="Quiz ID">
+            <button class="control-btn" onclick="startHost()">Generate Game PIN</button>
+        </div>
+
+        <!-- LOBBY SCREEN -->
+        <div id="host_lobby" class="screen" style="display: none;">
+            <h2>Join at localhost:8000 (or your student URL)</h2>
+            <div class="pin-display" id="pin_display">------</div>
+            <h3>Students Joined: <span id="student_count">0</span></h3>
+            <div class="student-list" id="student_list"></div>
+            <br>
+            <button class="control-btn" style="background-color: green; color: white;" onclick="sendEvent('start_game')">Start Game</button>
+        </div>
+
+        <!-- ACTIVE GAME CONTROLS -->
+        <div id="host_active" class="screen" style="display: none;">
+            <h2 id="host_status">Question Active!</h2>
+            <h3>Answers Received: <span id="answer_count">0</span> / <span id="total_active_players">0</span></h3>
+            
+            <br>
+            <button class="control-btn" onclick="sendEvent('time_up')">Force Time Up</button>
+            <button class="control-btn" onclick="sendEvent('show_leaderboard')">Show Leaderboard</button>
+            <button class="control-btn" onclick="sendEvent('next_question')">Next Question</button>
+            <button class="control-btn" style="background-color: red; color: white;" onclick="sendEvent('end_game')">End Game (Generate CSVs)</button>
+        </div>
+    </div>
+
+    <script>
+        let hostWs = null;
+
+        function showHostScreen(screenId) {
+            document.querySelectorAll('.screen').forEach(s => s.style.display = 'none');
+            document.getElementById(screenId).style.display = 'block';
+        }
+
+        function startHost() {
+            const quizId = document.getElementById('quiz_id_input').value;
+            hostWs = new WebSocket(`ws://127.0.0.1:8000/ws/host/${quizId}`);
+
+            hostWs.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+
+                switch(data.event) {
+                    case "room_created":
+                        showHostScreen('host_lobby');
+                        document.getElementById('pin_display').innerText = data.room_code;
+                        break;
+                    case "player_joined":
+                        const list = document.getElementById('student_list');
+                        const badge = document.createElement('div');
+                        badge.className = 'student-badge';
+                        badge.innerText = data.student_name;
+                        list.appendChild(badge);
+                        document.getElementById('student_count').innerText = data.total_players;
+                        break;
+                    case "answer_received":
+                        document.getElementById('answer_count').innerText = data.answers_submitted;
+                        document.getElementById('total_active_players').innerText = data.total_players;
+                        break;
+                }
+            };
+        }
+
+        function sendEvent(eventName) {
+            if (hostWs && hostWs.readyState === WebSocket.OPEN) {
+                hostWs.send(JSON.stringify({ event: eventName }));
+                if (eventName === 'start_game' || eventName === 'next_question') {
+                    showHostScreen('host_active');
+                    document.getElementById('host_status').innerText = "Question Active!";
+                    document.getElementById('answer_count').innerText = "0";
+                } else if (eventName === 'time_up') {
+                    document.getElementById('host_status').innerText = "Time is Up!";
+                }
+            }
+        }
+    </script>
+</body>
+</html>
