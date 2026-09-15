@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 from database import engine, SessionLocal
 import models, schemas
@@ -46,6 +46,29 @@ def create_question_for_quiz(quiz_id: int, question: schemas.QuestionCreate, db:
     db.commit()
     db.refresh(db_question)
     return db_question
+
+@app.get("/receipt/{session_id}/{student_name}")
+def download_receipt(session_id: int, student_name: str, db: Session = Depends(get_db)):
+    """Generates a CSV receipt for a student's Canvas submission."""
+    # Look up the student's final score for this specific game session
+    result = db.query(models.StudentResult).filter(
+        models.StudentResult.session_id == session_id,
+        models.StudentResult.student_name == student_name
+    ).first()
+
+    if not result:
+        raise HTTPException(status_code=404, detail="Student result not found.")
+
+    # Format the data as a CSV string
+    csv_content = f"Student Name,Total Score,Session ID\n{result.student_name},{result.total_score},{result.session_id}\n"
+    
+    # Return it as a downloadable file
+    filename = f"cst315_receipt_{student_name.replace(' ', '_')}.csv"
+    return Response(
+        content=csv_content, 
+        media_type="text/csv", 
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
 
 @app.websocket("/ws/host/{quiz_id}")
 async def websocket_host(websocket: WebSocket, quiz_id: int):
@@ -174,32 +197,90 @@ async def websocket_host(websocket: WebSocket, quiz_id: int):
                     db.commit()
                     db.refresh(game_session)
                     
-                    # 2. Loop through all students in memory and save their final scores
+                    # 2. Loop through all students to save their data
                     for player_id, student in room["students"].items():
+                        
+                        # Calculate total correct answers from their history
+                        history = student.get("history", [])
+                        total_correct = sum(1 for ans in history if ans["is_correct"] == 1)
+                        
+                        # Save their overall result
                         result = models.StudentResult(
                             session_id=game_session.id,
                             student_name=student["name"],
                             total_score=student["score"],
-                            correct_answers=0 # We can calculate this later if needed
+                            correct_answers=total_correct
                         )
                         db.add(result)
+                        db.commit()
+                        db.refresh(result) # Refresh to get the new result.id
+                        
+                        # 3. Save every individual question they answered to our new table
+                        for ans in history:
+                            student_ans = models.StudentAnswer(
+                                result_id=result.id,
+                                question_id=ans["question_id"],
+                                selected_option=ans["selected_option"],
+                                is_correct=ans["is_correct"]
+                            )
+                            db.add(student_ans)
                     
                     db.commit()
+                    final_session_id = game_session.id
                     db.close()
                     
-                    # 3. Tell all student devices the game is over and give them the session ID to download their report
+                    # 4. Tell student devices the game is over
                     await manager.broadcast_to_students(room_code, {
                         "event": "game_over",
-                        "session_id": game_session.id
+                        "session_id": final_session_id 
                     })
                     
-                    # 4. Wipe the room from the server's live memory
+                    # 5. Wipe the room from live memory
                     del manager.active_rooms[room_code]
 
     except WebSocketDisconnect:
         if room_code in manager.active_rooms:
             del manager.active_rooms[room_code]
 
+@app.get("/analytics/{session_id}")
+def get_session_analytics(session_id: int, db: Session = Depends(get_db)):
+    """Fetches a detailed breakdown of student performance for a specific game session."""
+    
+    # 1. Verify the session exists
+    game_session = db.query(models.GameSession).filter(models.GameSession.id == session_id).first()
+    if not game_session:
+        raise HTTPException(status_code=404, detail="Game session not found.")
+        
+    # 2. Fetch all student results for this session
+    results = db.query(models.StudentResult).filter(models.StudentResult.session_id == session_id).all()
+    
+    # 3. Build the analytics report
+    report = {
+        "session_id": game_session.id,
+        "quiz_id": game_session.quiz_id,
+        "total_students_participated": len(results),
+        "student_breakdowns": []
+    }
+    
+    for student in results:
+        # Fetch the granular question-by-question answers for this specific student
+        answers = db.query(models.StudentAnswer).filter(models.StudentAnswer.result_id == student.id).all()
+        
+        student_data = {
+            "name": student.student_name,
+            "final_score": student.total_score,
+            "total_correct": student.correct_answers,
+            "question_history": [
+                {
+                    "question_id": ans.question_id,
+                    "selected_option": ans.selected_option,
+                    "is_correct": bool(ans.is_correct)
+                } for ans in answers
+            ]
+        }
+        report["student_breakdowns"].append(student_data)
+        
+    return report
 
 @app.websocket("/ws/student/{room_code}")
 async def websocket_student(websocket: WebSocket, room_code: str, student_name: str):
@@ -238,18 +319,31 @@ async def websocket_student(websocket: WebSocket, room_code: str, student_name: 
                 current_q_index = room["current_question_index"]
                 
                 # The Instant Lock: If they already answered this index, ignore new taps
+                # The Instant Lock: If they already answered this index, ignore new taps
                 if student.get("last_answered_index") == current_q_index:
                     continue
                 
-                # Lock in their answer
-                student["last_answered_index"] = current_q_index
-                student["last_selected_option"] = selected_option
+                # 1. Grab the data from the WebSocket first!
                 selected_option = data.get("selected_option")
                 time_remaining_ms = data.get("time_remaining_ms", 0)
+
+                # 2. Then lock in their answer and choice
+                student["last_answered_index"] = current_q_index
+                student["last_selected_option"] = selected_option
                 
                 # Check correctness
                 current_question = room["questions"][current_q_index]
                 is_correct = (selected_option == current_question["correct"])
+                
+                # NEW: Save this specific answer to a running history for the student
+                if "history" not in student:
+                    student["history"] = []
+                
+                student["history"].append({
+                    "question_id": current_question["id"],
+                    "selected_option": selected_option,
+                    "is_correct": 1 if is_correct else 0
+                })
                 
                 # Scoring: 500 base points for correct + up to 500 speed bonus
                 if is_correct:

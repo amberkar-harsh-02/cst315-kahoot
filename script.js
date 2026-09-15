@@ -114,4 +114,16 @@ function submitAnswer(color) {
     });
     
     document.getElementById('question_banner').innerText = "Answer locked! Waiting for time to expire...";
+
+    // Triggered by clicking the Download Canvas Receipt button on the end screen
+document.getElementById('download_receipt_btn').addEventListener('click', function() {
+    const sessionId = this.dataset.sessionId;
+    
+    // Redirect the browser to the FastAPI download endpoint
+    if (sessionId && studentName) {
+        const url = `/receipt/${sessionId}/${encodeURIComponent(studentName)}`;
+        window.location.href = url;
+    }
+});
+
 }

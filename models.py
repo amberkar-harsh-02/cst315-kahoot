@@ -63,3 +63,16 @@ class StudentResult(Base):
     correct_answers = Column(Integer)
     
     session = relationship("GameSession", back_populates="results")
+
+class StudentAnswer(Base):
+    """Stores the specific answer a student gave for a single question."""
+    __tablename__ = "student_answers"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    result_id = Column(Integer, ForeignKey("student_results.id"))
+    question_id = Column(Integer, ForeignKey("questions.id"))
+    selected_option = Column(String)
+    is_correct = Column(Integer) # SQLite stores booleans as 1 (True) or 0 (False)
+    
+    # Establish a relationship back to the main student result
+    result = relationship("StudentResult", backref="answers")
