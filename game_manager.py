@@ -38,5 +38,17 @@ class GameManager:
         if room_code in self.active_rooms and player_id in self.active_rooms[room_code]["students"]:
             self.active_rooms[room_code]["students"][player_id]["status"] = "offline"
 
+
+    async def broadcast_to_students(self, room_code: str, message: dict):
+        """Sends a JSON payload to all online students in a room."""
+        if room_code in self.active_rooms:
+            for player_id, student in self.active_rooms[room_code]["students"].items():
+                if student["status"] == "online":
+                    try:
+                        await student["ws"].send_json(message)
+                    except Exception:
+                        # If the send fails, assume they dropped connection
+                        student["status"] = "offline"
+
 # Initialize a single global instance of the manager
 manager = GameManager()
