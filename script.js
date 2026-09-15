@@ -72,12 +72,21 @@ function joinGame() {
                     "Time's Up! Correct Answer: " + data.correct_option.toUpperCase();
                 break;
             
+            case "answer_received":
+                        document.getElementById('answer_count').innerText = data.answers_submitted;
+                        document.getElementById('total_active_players').innerText = data.total_players;
+                        break;
+                    // --- NEW EVENT CASE ---
             case "game_over":
                 showScreen('end_screen');
-                // Store the session ID on the button so we can fetch the CSV receipt later
+                // We dropped the CSV receipt, so we'll just display a clean game over message
+                document.getElementById('final_score_display').innerText = "Look at the projector for final results!";
+                
+                // Ensure the old download button stays hidden
                 const receiptBtn = document.getElementById('download_receipt_btn');
-                receiptBtn.style.display = "block";
-                receiptBtn.dataset.sessionId = data.session_id;
+                if (receiptBtn) {
+                    receiptBtn.style.display = "none";
+                }
                 break;
         }
     };
@@ -126,4 +135,35 @@ document.getElementById('download_receipt_btn').addEventListener('click', functi
     }
 });
 
+async function fetchAnalytics(sessionId) {
+            try {
+                // FIX: Use the full absolute URL!
+                const response = await fetch(`http://127.0.0.1:8000/analytics/${sessionId}`);
+                const data = await response.json();
+                
+                // Build a basic HTML table for the partner to style later
+                let html = `<h3>Total Students: ${data.total_students_participated}</h3>`;
+                html += `<table border="1" style="margin: 0 auto; width: 100%; text-align: left; border-collapse: collapse;">`;
+                html += `<tr style="background-color: #eee;">
+                            <th style="padding: 10px;">Name</th>
+                            <th style="padding: 10px;">Score</th>
+                            <th style="padding: 10px;">Correct Answers</th>
+                         </tr>`;
+                
+                data.student_breakdowns.forEach(student => {
+                    html += `<tr>
+                                <td style="padding: 10px;">${student.name}</td>
+                                <td style="padding: 10px;">${student.final_score}</td>
+                                <td style="padding: 10px;">${student.total_correct}</td>
+                             </tr>`;
+                });
+                
+                html += `</table>`;
+                document.getElementById('analytics_content').innerHTML = html;
+                
+            } catch (error) {
+                document.getElementById('analytics_content').innerHTML = "<p style='color:red;'>Error loading analytics.</p>";
+                console.error(error);
+            }
+        }
 }

@@ -1,13 +1,23 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
+from fastapi.middleware.cors import CORSMiddleware
 from database import engine, SessionLocal
 import models, schemas
 from game_manager import manager
+from fastapi.staticfiles import StaticFiles
 
 # Initialize database tables
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="CST 315 Kahoot Clone")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows your local HTML files to request data
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Dependency to safely open and close a database session per request
 def get_db():
@@ -199,12 +209,9 @@ async def websocket_host(websocket: WebSocket, quiz_id: int):
                     
                     # 2. Loop through all students to save their data
                     for player_id, student in room["students"].items():
-                        
-                        # Calculate total correct answers from their history
                         history = student.get("history", [])
                         total_correct = sum(1 for ans in history if ans["is_correct"] == 1)
                         
-                        # Save their overall result
                         result = models.StudentResult(
                             session_id=game_session.id,
                             student_name=student["name"],
@@ -213,9 +220,9 @@ async def websocket_host(websocket: WebSocket, quiz_id: int):
                         )
                         db.add(result)
                         db.commit()
-                        db.refresh(result) # Refresh to get the new result.id
+                        db.refresh(result)
                         
-                        # 3. Save every individual question they answered to our new table
+                        # 3. Save every individual question they answered
                         for ans in history:
                             student_ans = models.StudentAnswer(
                                 result_id=result.id,
@@ -235,7 +242,13 @@ async def websocket_host(websocket: WebSocket, quiz_id: int):
                         "session_id": final_session_id 
                     })
                     
-                    # 5. Wipe the room from live memory
+                    # 5. Tell the Host dashboard the game is over
+                    await websocket.send_json({
+                        "event": "game_over", 
+                        "session_id": final_session_id
+                    })
+                    
+                    # 6. Wipe the room from live memory
                     del manager.active_rooms[room_code]
 
     except WebSocketDisconnect:
@@ -364,3 +377,6 @@ async def websocket_student(websocket: WebSocket, room_code: str, student_name: 
                 
     except WebSocketDisconnect:
         manager.mark_student_offline(room_code, player_id)  
+
+# Serve all frontend files (HTML, CSS, JS, Images)
+app.mount("/", StaticFiles(directory=".", html=True), name="static")
