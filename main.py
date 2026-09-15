@@ -143,6 +143,59 @@ async def websocket_host(websocket: WebSocket, quiz_id: int):
                         "top_players": top_5
                     })
 
+            elif event == "next_question":
+                if room:
+                    room["current_question_index"] += 1
+                    current_q_index = room["current_question_index"]
+                    
+                    # Check if we have run out of questions
+                    if current_q_index >= len(room["questions"]):
+                        await websocket.send_json({"event": "quiz_finished"})
+                    else:
+                        room["current_state"] = "question_active"
+                        next_question = room["questions"][current_q_index]
+                        
+                        await manager.broadcast_to_students(room_code, {
+                            "event": "show_question",
+                            "question": {
+                                "text": next_question["text"],
+                                "options": next_question["options"],
+                                "time_limit": next_question["time_limit"]
+                            }
+                        })
+
+            elif event == "end_game":
+                if room:
+                    db = SessionLocal()
+                    
+                    # 1. Create a permanent record of this game session
+                    game_session = models.GameSession(quiz_id=quiz_id, room_code=room_code)
+                    db.add(game_session)
+                    db.commit()
+                    db.refresh(game_session)
+                    
+                    # 2. Loop through all students in memory and save their final scores
+                    for player_id, student in room["students"].items():
+                        result = models.StudentResult(
+                            session_id=game_session.id,
+                            student_name=student["name"],
+                            total_score=student["score"],
+                            correct_answers=0 # We can calculate this later if needed
+                        )
+                        db.add(result)
+                    
+                    db.commit()
+                    db.close()
+                    
+                    # 3. Tell all student devices the game is over and give them the session ID to download their report
+                    await manager.broadcast_to_students(room_code, {
+                        "event": "game_over",
+                        "session_id": game_session.id
+                    })
+                    
+                    # 4. Wipe the room from the server's live memory
+                    del manager.active_rooms[room_code]
+
     except WebSocketDisconnect:
         if room_code in manager.active_rooms:
             del manager.active_rooms[room_code]
