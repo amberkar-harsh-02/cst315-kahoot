@@ -123,7 +123,12 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
 @app.post("/google-login")
 def google_auth(request: schemas.GoogleAuthRequest, db: Session = Depends(get_db)):
     try:
-        idinfo = id_token.verify_oauth2_token(request.token, google_requests.Request(), GOOGLE_CLIENT_ID)
+        idinfo = id_token.verify_oauth2_token(
+            request.token, 
+            google_requests.Request(), 
+            GOOGLE_CLIENT_ID,
+            clock_skew_in_seconds=60
+        )
         email = idinfo['email'].lower()
         
         if not email.endswith("@csumb.edu"):
@@ -143,8 +148,11 @@ def google_auth(request: schemas.GoogleAuthRequest, db: Session = Depends(get_db
         access_token = create_access_token(data={"sub": user.email, "is_professor": user.is_professor})
         return {"access_token": access_token, "token_type": "bearer"}
         
-    except ValueError:
-        raise HTTPException(status_code=401, detail="Invalid Google token")
+    except ValueError as e:
+        # Print the exact error to your terminal
+        print(f"GOOGLE AUTH ERROR: {str(e)}") 
+        # Send the exact error back to the frontend
+        raise HTTPException(status_code=401, detail=f"Google Error: {str(e)}")
 
 
 # --- REST API ROUTES ---

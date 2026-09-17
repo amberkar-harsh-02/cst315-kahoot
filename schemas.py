@@ -47,5 +47,8 @@ class Quiz(QuizBase):
     owner_id: int
     questions: List[Question] = []
 
-    class Config:
-        from_attributes = True
+class Config:
+    from_attributes = True
+
+class GoogleAuthRequest(BaseModel):
+    token: str
