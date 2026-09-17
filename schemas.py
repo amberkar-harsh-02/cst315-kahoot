@@ -1,6 +1,20 @@
 from pydantic import BaseModel
 from typing import List, Optional
 
+
+class UserCreate(BaseModel):
+    email: str
+    password: str
+    is_professor: bool = False
+
+class UserResponse(BaseModel):
+    id: int
+    email: str
+    is_professor: bool
+
+    class Config:
+        from_attributes = True
+
 # --- Questions ---
 class QuestionBase(BaseModel):
     text: str

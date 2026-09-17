@@ -219,3 +219,10 @@ __marimo__/
 
 #DB
 kahoot.db*
+
+.env
+
+
+# React dependencies
+frontend/node_modules/
+frontend/dist/

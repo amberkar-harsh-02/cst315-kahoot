@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey
+from sqlalchemy import Boolean, Column, Integer, String, ForeignKey
 from sqlalchemy.orm import relationship
 from database import Base
 
@@ -6,12 +6,12 @@ import datetime
 from sqlalchemy import DateTime
 
 class User(Base):
-    """Stores Professor and TA logins."""
     __tablename__ = "users"
-    
+
     id = Column(Integer, primary_key=True, index=True)
-    username = Column(String, unique=True, index=True)
+    email = Column(String, unique=True, index=True)
     hashed_password = Column(String)
+    is_professor = Column(Boolean, default=False)
 
 class Quiz(Base):
     """Stores the overarching quiz information."""
