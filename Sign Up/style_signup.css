@@ -1,0 +1,85 @@
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: linear-gradient(135deg, #354c74, #6d83ad);
+  font-family: Arial, sans-serif;
+}
+
+form {
+  width: 320px;
+  padding: 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  text-align: center;
+
+  background: white;
+  border-radius: 18px;
+  box-shadow: 0 15px 35px rgb(0 0 0 / 25%);
+}
+
+h1 {
+  margin: 0;
+  color: #354c74;
+  font-size: 28px;
+}
+
+label {
+  color: #555;
+  font-weight: bold;
+}
+
+input {
+  padding: 12px;
+  border: 2px solid #d5dbea;
+  border-radius: 8px;
+  font-size: 16px;
+  outline: none;
+}
+
+input:focus {
+  border-color: #354c74;
+  box-shadow: 0 0 0 3px rgb(53 76 116 / 15%);
+}
+
+button {
+  padding: 12px;
+  border: none;
+  border-radius: 8px;
+
+  background: #354c74;
+  color: white;
+  
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: 0.2s;
+}
+
+button:hover {
+  background: #253858;
+  transform: translateY(-2px);
+}
+
+#CSUMB_signin{
+    background-color: #D6A31F;
+    color: white;
+
+    height: 7vh;
+    width: 10vw;
+
+    display: flex;
+    justify-content: center;
+    align-items: center;
+
+    position:absolute;
+    top: 20px;
+    right: 20px;
+
+    border: none;
+    border-radius: 5px;
+}
+
