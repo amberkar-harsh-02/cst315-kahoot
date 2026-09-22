@@ -166,6 +166,10 @@ def create_quiz(quiz: schemas.QuizCreate, db: Session = Depends(get_db), current
     db.refresh(db_quiz)
     return db_quiz
 
+@app.get("/quizzes/", response_model=list[schemas.Quiz])
+def get_all_quizzes(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_professor)):
+    return db.query(models.Quiz).filter(models.Quiz.owner_id == current_user.id).all()
+
 @app.get("/quizzes/{quiz_id}", response_model=schemas.Quiz)
 def read_quiz(quiz_id: int, db: Session = Depends(get_db)):
     db_quiz = db.query(models.Quiz).filter(models.Quiz.id == quiz_id).first()
@@ -287,33 +291,21 @@ async def websocket_host(websocket: WebSocket, quiz_id: int, token: str = Query(
                     
                     first_question = room["questions"][0]
                     
-                    await manager.broadcast_to_students(room_code, {
+                    question_payload = {
                         "event": "show_question",
                         "question": {
                             "text": first_question["text"],
                             "options": first_question["options"],
                             "time_limit": first_question["time_limit"]
                         }
-                    })
+                    }
+                    
+                    await websocket.send_json(question_payload)
+                    await manager.broadcast_to_students(room_code, question_payload)
                 db.close()
                 
-            elif event == "time_up":
-                if room:
-                    room["current_state"] = "time_up"
-                    current_q_index = room["current_question_index"]
-                    current_question = room["questions"][current_q_index]
-                    
-                    await websocket.send_json({
-                        "event": "time_up_results",
-                        "correct_option": current_question["correct"]
-                    })
-                    
-                    await manager.broadcast_to_students(room_code, {
-                        "event": "time_up",
-                        "correct_option": current_question["correct"]
-                    })
-                    
-            elif event == "show_leaderboard":
+            # FIX: Both Timer hitting 0 AND clicking "Skip" now trigger the exact same auto-transition
+            elif event in ["time_up", "show_leaderboard"]:
                 if room:
                     room["current_state"] = "leaderboard"
                     ranked_students = sorted(
@@ -332,6 +324,13 @@ async def websocket_host(websocket: WebSocket, quiz_id: int, token: str = Query(
                         "top_players": top_5
                     })
 
+                    # FIX: Broadcast a map of player_id -> score to all students to avoid websocket crashes
+                    scores_map = {p_id: s["score"] for p_id, s in room["students"].items()}
+                    await manager.broadcast_to_students(room_code, {
+                        "event": "leaderboard",
+                        "scores": scores_map
+                    })
+
             elif event == "next_question":
                 if room:
                     room["current_question_index"] += 1
@@ -343,19 +342,21 @@ async def websocket_host(websocket: WebSocket, quiz_id: int, token: str = Query(
                         room["current_state"] = "question_active"
                         next_question = room["questions"][current_q_index]
                         
-                        await manager.broadcast_to_students(room_code, {
+                        question_payload = {
                             "event": "show_question",
                             "question": {
                                 "text": next_question["text"],
                                 "options": next_question["options"],
                                 "time_limit": next_question["time_limit"]
                             }
-                        })
+                        }
+                        
+                        await websocket.send_json(question_payload)
+                        await manager.broadcast_to_students(room_code, question_payload)
 
             elif event == "end_game":
                 if room:
                     db = SessionLocal()
-                    
                     game_session = models.GameSession(quiz_id=quiz_id, room_code=room_code)
                     db.add(game_session)
                     db.commit()
@@ -369,7 +370,8 @@ async def websocket_host(websocket: WebSocket, quiz_id: int, token: str = Query(
                             session_id=game_session.id,
                             student_name=student["name"],
                             total_score=student["score"],
-                            correct_answers=total_correct
+                            correct_answers=total_correct,
+                            user_id=student.get("user_id")
                         )
                         db.add(result)
                         db.commit()
@@ -388,9 +390,12 @@ async def websocket_host(websocket: WebSocket, quiz_id: int, token: str = Query(
                     final_session_id = game_session.id
                     db.close()
                     
+                    # FIX: Broadcast final scores using the same safe mapping technique
+                    scores_map = {p_id: s["score"] for p_id, s in room["students"].items()}
                     await manager.broadcast_to_students(room_code, {
                         "event": "game_over",
-                        "session_id": final_session_id 
+                        "session_id": final_session_id,
+                        "scores": scores_map
                     })
                     
                     await websocket.send_json({
@@ -405,9 +410,26 @@ async def websocket_host(websocket: WebSocket, quiz_id: int, token: str = Query(
             del manager.active_rooms[room_code]
 
 @app.websocket("/ws/student/{room_code}")
-async def websocket_student(websocket: WebSocket, room_code: str, student_name: str):
-    await websocket.accept()
+async def websocket_student(websocket: WebSocket, room_code: str, student_name: str, token: str = Query(None)):
     
+    # 1. Check if they are a logged-in student or a guest
+    user_id = None
+    if token:
+        try:
+            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            email = payload.get("sub")
+            
+            # Briefly open DB to get their actual ID
+            db = SessionLocal()
+            user = db.query(models.User).filter(models.User.email == email).first()
+            if user:
+                user_id = user.id
+            db.close()
+        except Exception:
+            pass # If the token is expired/invalid, let them play as a guest
+
+    # 2. Accept connection and add to room
+    await websocket.accept()
     player_id = manager.add_student(room_code, student_name, websocket)
     
     if not player_id:
@@ -415,8 +437,9 @@ async def websocket_student(websocket: WebSocket, room_code: str, student_name: 
         await websocket.close()
         return
 
+    # 3. Attach the user_id to their live game state
+    manager.active_rooms[room_code]["students"][player_id]["user_id"] = user_id
     await websocket.send_json({"event": "join_success", "player_id": player_id})
-    
     host_ws = manager.active_rooms[room_code]["host_ws"]
     await host_ws.send_json({
         "event": "player_joined", 
@@ -441,7 +464,7 @@ async def websocket_student(websocket: WebSocket, room_code: str, student_name: 
                     continue
                 
                 selected_option = data.get("selected_option")
-                time_remaining_ms = data.get("time_remaining_ms", 0)
+                time_remaining_ms = data.get("time_remaining_ms") or 0
 
                 student["last_answered_index"] = current_q_index
                 student["last_selected_option"] = selected_option

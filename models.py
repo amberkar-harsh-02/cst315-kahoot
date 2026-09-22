@@ -57,6 +57,7 @@ class StudentResult(Base):
     __tablename__ = "student_results"
     
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     session_id = Column(Integer, ForeignKey("game_sessions.id"))
     student_name = Column(String)
     total_score = Column(Integer)
