@@ -24,20 +24,23 @@ class Quiz(Base):
     owner = relationship("User")
     questions = relationship("Question", back_populates="quiz", cascade="all, delete-orphan")
 
+# Inside models.py, update the Question class:
 class Question(Base):
-    """Stores individual questions and answers for a quiz."""
     __tablename__ = "questions"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     quiz_id = Column(Integer, ForeignKey("quizzes.id"))
-    text = Column(String)
+    text = Column(String, index=True)
     option_red = Column(String)
     option_blue = Column(String)
     option_yellow = Column(String)
     option_green = Column(String)
-    correct_option = Column(String)  # Expected values: 'red', 'blue', 'yellow', 'green'
-    time_limit_seconds = Column(Integer, default=30)
+    correct_option = Column(String)
+    time_limit_seconds = Column(Integer, default=15)
     
+    # NEW: Store the explanation for why the answer is correct
+    explanation = Column(String, nullable=True)
+
     quiz = relationship("Quiz", back_populates="questions")
 
 

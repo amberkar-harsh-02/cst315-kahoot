@@ -5,7 +5,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from database import engine, SessionLocal
 import models, schemas
 from game_manager import manager
-from fastapi.staticfiles import StaticFiles
 from passlib.context import CryptContext
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 import jwt
@@ -199,7 +198,8 @@ async def upload_quiz_json(
                 option_yellow=q["option_yellow"],
                 option_green=q["option_green"],
                 correct_option=q["correct_option"],
-                time_limit_seconds=q.get("time_limit_seconds", 15)
+                time_limit_seconds=q.get("time_limit_seconds", 15),
+                explanation=q.get("explanation", "")
             )
             db.add(db_question)
         
@@ -225,6 +225,7 @@ class QuestionBuilderItem(BaseModel):
     option_green: str
     correct_option: str
     time_limit_seconds: int = 15
+    explanation: str = ""
 
 class FullQuizPayload(BaseModel):
     title: str
@@ -248,7 +249,8 @@ def create_quiz_from_builder(payload: FullQuizPayload, db: Session = Depends(get
             option_yellow=q.option_yellow,
             option_green=q.option_green,
             correct_option=q.correct_option,
-            time_limit_seconds=q.time_limit_seconds
+            time_limit_seconds=q.time_limit_seconds,
+            explanation=q.explanation
         )
         db.add(db_question)
     
@@ -411,6 +413,43 @@ def get_session_analytics(session_id: int, db: Session = Depends(get_db), curren
         "questions": question_stats,
         "students": sorted(student_breakdowns, key=lambda x: x["final_score"], reverse=True)
     }
+
+@app.get("/student/history")
+def get_student_history(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    # Find all past games played by this specific logged-in user
+    results = db.query(models.StudentResult).filter(models.StudentResult.user_id == current_user.id).all()
+    history = []
+    
+    for r in results:
+        session = db.query(models.GameSession).filter(models.GameSession.id == r.session_id).first()
+        if not session: continue
+        quiz = db.query(models.Quiz).filter(models.Quiz.id == session.quiz_id).first()
+        
+        answers = db.query(models.StudentAnswer).filter(models.StudentAnswer.result_id == r.id).all()
+        details = []
+        
+        for a in answers:
+            q = db.query(models.Question).filter(models.Question.id == a.question_id).first()
+            if q:
+                details.append({
+                    "question_text": q.text,
+                    "selected_option": a.selected_option,
+                    "selected_text": getattr(q, f"option_{a.selected_option}", a.selected_option),
+                    "correct_option": q.correct_option,
+                    "correct_text": getattr(q, f"option_{q.correct_option}", q.correct_option),
+                    "is_correct": a.is_correct,
+                    "explanation": q.explanation or "No explanation provided by the instructor."
+                })
+        
+        history.append({
+            "id": r.id,
+            "quiz_title": quiz.title if quiz else "Unknown Quiz",
+            "total_score": r.total_score,
+            "accuracy": round((r.correct_answers / len(details) * 100)) if details else 0,
+            "details": details
+        })
+        
+    return list(reversed(history)) # Return newest first
 
 
 # --- WEBSOCKETS ---
@@ -577,8 +616,27 @@ async def websocket_host(websocket: WebSocket, quiz_id: int, token: str = Query(
                     del manager.active_rooms[room_code]
 
     except WebSocketDisconnect:
-        if room_code in manager.active_rooms:
-            del manager.active_rooms[room_code]
+        manager.mark_student_offline(room_code, player_id)  
+        
+        # --- NEW: Prevent Ghost Players from stalling the host timer ---
+        room = manager.active_rooms.get(room_code)
+        if room and "host_ws" in room:
+            # Recalculate remaining active players and answers
+            total_active = len(room["students"])
+            current_q_index = room.get("current_question_index", 0)
+            answers_in = sum(1 for s in room["students"].values() if s.get("last_answered_index") == current_q_index)
+            
+            try:
+                import asyncio
+                # Use asyncio.create_task to safely fire this off while the websocket is closing
+                asyncio.create_task(room["host_ws"].send_json({
+                    "event": "player_left",
+                    "total_players": total_active,
+                    "answers_submitted": answers_in
+                }))
+            except Exception:
+                pass
+
 
 @app.websocket("/ws/student/{room_code}")
 async def websocket_student(websocket: WebSocket, room_code: str, student_name: str, token: str = Query(None)):
@@ -666,7 +724,4 @@ async def websocket_student(websocket: WebSocket, room_code: str, student_name: 
                 })
                 
     except WebSocketDisconnect:
-        manager.mark_student_offline(room_code, player_id)  
-
-# Serve all frontend files (HTML, CSS, JS, Images) - Must remain at the very bottom
-app.mount("/", StaticFiles(directory=".", html=True), name="static")
+        manager.mark_student_offline(room_code, player_id)

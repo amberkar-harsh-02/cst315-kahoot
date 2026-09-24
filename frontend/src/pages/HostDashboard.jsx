@@ -13,6 +13,9 @@ export default function HostDashboard() {
   const [timeLeft, setTimeLeft] = useState(0);
   const [answersCount, setAnswersCount] = useState(0);
   const [leaderboard, setLeaderboard] = useState([]);
+  
+  // NEW: Leaderboard auto-advance timer
+  const [leaderboardTimeLeft, setLeaderboardTimeLeft] = useState(5); 
 
   const ws = useRef(null);
   const fileInputRef = useRef(null);
@@ -31,6 +34,33 @@ export default function HostDashboard() {
     .catch(err => console.error(err));
   }, [token, navigate]);
 
+  // Question Timer Logic
+  useEffect(() => {
+    if (view === 'question' && timeLeft > 0) {
+      const timerId = setTimeout(() => setTimeLeft(timeLeft - 1), 1000);
+      return () => clearTimeout(timerId);
+    } else if (view === 'question' && timeLeft === 0) {
+      ws.current.send(JSON.stringify({ event: 'time_up' }));
+    }
+  }, [timeLeft, view]);
+
+  // Fast-Paced Auto-Skip Logic (If everyone answers)
+  useEffect(() => {
+    if (view === 'question' && totalPlayers > 0 && answersCount >= totalPlayers) {
+      ws.current.send(JSON.stringify({ event: 'show_leaderboard' }));
+    }
+  }, [answersCount, totalPlayers, view]);
+
+  // NEW: Leaderboard 5-Second Auto-Advance Logic
+  useEffect(() => {
+    if (view === 'leaderboard' && leaderboardTimeLeft > 0) {
+      const timerId = setTimeout(() => setLeaderboardTimeLeft(leaderboardTimeLeft - 1), 1000);
+      return () => clearTimeout(timerId);
+    } else if (view === 'leaderboard' && leaderboardTimeLeft === 0) {
+      ws.current.send(JSON.stringify({ event: 'next_question' }));
+    }
+  }, [leaderboardTimeLeft, view]);
+
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -44,55 +74,42 @@ export default function HostDashboard() {
         headers: { 'Authorization': `Bearer ${token}` },
         body: formData
       });
+      if (!res.ok) throw new Error('Upload failed');
       
-      if (!res.ok) {
-        const errorData = await res.json();
-        throw new Error(errorData.detail || 'Upload failed');
-      }
-      
-      // Refresh the quiz list to show the newly uploaded quiz
       const quizzesRes = await fetch('http://127.0.0.1:8000/quizzes/', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       const data = await quizzesRes.json();
       setQuizzes(data);
       alert("Quiz uploaded successfully!");
-      
     } catch (err) {
       alert(`Error: ${err.message}`);
     }
-    
-    e.target.value = null; // Reset input so you can upload the same file again if needed
+    e.target.value = null; 
   };
 
   const deleteQuiz = async (quizId) => {
     if (!window.confirm("Are you sure you want to delete this quiz? This cannot be undone.")) return;
-    
     try {
       const res = await fetch(`http://127.0.0.1:8000/quizzes/${quizId}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (!res.ok) throw new Error('Failed to delete quiz');
-      
-      // Remove it from the UI immediately
       setQuizzes(quizzes.filter(q => q.id !== quizId));
     } catch (err) {
       alert(`Error: ${err.message}`);
     }
   };
 
-  // Timer Logic (Feature 5)
-  useEffect(() => {
-    if (view === 'question' && timeLeft > 0) {
-      const timerId = setTimeout(() => setTimeLeft(timeLeft - 1), 1000);
-      return () => clearTimeout(timerId);
-    } else if (view === 'question' && timeLeft === 0) {
-      ws.current.send(JSON.stringify({ event: 'time_up' }));
-    }
-  }, [timeLeft, view]);
-
   const hostGame = (quizId) => {
+    setPlayers([]);
+    setTotalPlayers(0);
+    setAnswersCount(0);
+    setLeaderboard([]);
+    setRoomCode('');
+    setCurrentQuestion(null);
+    
     ws.current = new WebSocket(`ws://127.0.0.1:8000/ws/host/${quizId}?token=${token}`);
     
     ws.current.onmessage = (event) => {
@@ -104,6 +121,9 @@ export default function HostDashboard() {
       } else if (data.event === 'player_joined') {
         setPlayers(prev => [...prev, data.student_name]);
         setTotalPlayers(data.total_players);
+      } else if (data.event === 'player_left') {
+        setTotalPlayers(data.total_players);
+        if (data.answers_submitted !== undefined) setAnswersCount(data.answers_submitted);
       } else if (data.event === 'show_question') {
         setCurrentQuestion(data.question);
         setTimeLeft(data.question.time_limit);
@@ -113,9 +133,12 @@ export default function HostDashboard() {
         setAnswersCount(data.answers_submitted);
         setTotalPlayers(data.total_players);
       } else if (data.event === 'leaderboard') {
-        // Feature 4: Top 3 People Displayed
-        setLeaderboard(data.top_players.slice(0, 3)); 
+        setLeaderboard(data.top_players.slice(0, 3));
+        setLeaderboardTimeLeft(5); // Reset the 5s timer
         setView('leaderboard');
+      } else if (data.event === 'quiz_finished') {
+        // NEW: Automatically end the game when out of questions
+        ws.current.send(JSON.stringify({ event: 'end_game' }));
       } else if (data.event === 'game_over') {
         setView('game_over');
       }
@@ -130,7 +153,7 @@ export default function HostDashboard() {
   return (
     <div className="flex min-h-screen flex-col bg-gray-50 p-8">
       
-      {/* 1. Professor Quiz Dashboard (Feature 2) */}
+      {/* 1. Professor Quiz Dashboard */}
       {view === 'dashboard' && (
         <div className="mx-auto w-full max-w-6xl">
           <div className="mb-10 flex items-center justify-between border-b pb-6">
@@ -140,14 +163,13 @@ export default function HostDashboard() {
                 View Analytics
               </button>
               
-              {/* Hidden File Input & Upload Trigger */}
               <input type="file" accept=".json" ref={fileInputRef} onChange={handleFileUpload} className="hidden" />
               <button onClick={() => fileInputRef.current.click()} className="rounded-lg bg-green-500 px-6 py-3 font-bold text-white transition-colors hover:bg-green-600">
                 Upload JSON
               </button>
               
               <button onClick={() => navigate('/create')} className="rounded-lg bg-blue-600 px-6 py-3 font-bold text-white transition-colors hover:bg-blue-700">
-                + Create New Quiz
+                + Create Quiz
               </button>
               <button onClick={() => { localStorage.removeItem('kahoot_token'); navigate('/'); }} className="text-gray-500 hover:underline">
                 Log Out
@@ -162,20 +184,19 @@ export default function HostDashboard() {
               </div>
             ) : (
               quizzes.map((quiz) => (
-                <div key={quiz.id} className="flex flex-col rounded-2xl bg-white p-8 shadow-md transition-transform hover:-translate-y-1">
+                <div key={quiz.id} className="flex flex-col rounded-2xl bg-white p-8 shadow-md transition-transform hover:-translate-y-1 border border-gray-100">
                   <h2 className="mb-4 text-2xl font-bold text-gray-800">{quiz.title}</h2>
-                  <p className="mb-8 text-gray-500">{quiz.questions.length} Questions</p>
                   <div className="mt-auto flex flex-col space-y-3">
                     <button onClick={() => hostGame(quiz.id)} className="rounded-lg bg-green-500 py-3 font-bold text-white hover:bg-green-600">
                       Host Game
                     </button>
                     <div className="flex space-x-3">
-                      <button className="rounded-lg border-2 border-gray-200 py-3 font-bold text-gray-600 hover:bg-gray-50">
-                      Edit Quiz
-                    </button>
-                    <button onClick={() => deleteQuiz(quiz.id)} className="flex-1 rounded-lg bg-red-100 py-2 font-bold text-red-600 hover:bg-red-200">
+                      <button onClick={() => navigate('/create')} className="flex-1 rounded-lg border-2 border-gray-200 py-2 font-bold text-gray-600 hover:bg-gray-50">
+                        Edit
+                      </button>
+                      <button onClick={() => deleteQuiz(quiz.id)} className="flex-1 rounded-lg bg-red-100 py-2 font-bold text-red-600 hover:bg-red-200">
                         Delete
-                    </button>
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -201,7 +222,7 @@ export default function HostDashboard() {
         </div>
       )}
 
-      {/* 3. Question View (Features 4 & 5) */}
+      {/* 3. Question View */}
       {view === 'question' && currentQuestion && (
         <div className="flex flex-grow flex-col">
           <div className="mb-8 flex items-center justify-between rounded-2xl bg-white p-8 shadow-md">
@@ -232,13 +253,13 @@ export default function HostDashboard() {
           
           <div className="mt-8 flex justify-end">
             <button onClick={showLeaderboard} className="rounded-xl bg-gray-900 px-10 py-4 text-xl font-bold text-white hover:bg-gray-800">
-              Skip Timer & Show Leaderboard
+              Skip Timer
             </button>
           </div>
         </div>
       )}
 
-      {/* 4. Top 3 Leaderboard (Feature 4) */}
+      {/* 4. Top 3 Leaderboard (Auto-advances) */}
       {view === 'leaderboard' && (
         <div className="mx-auto flex w-full max-w-4xl flex-grow flex-col justify-center">
           <h2 className="mb-12 text-center text-6xl font-black text-gray-800">Top 3 Leaderboard</h2>
@@ -257,9 +278,16 @@ export default function HostDashboard() {
               ))
             )}
           </div>
-          <div className="mt-12 flex justify-center space-x-6">
-            <button onClick={nextQuestion} className="rounded-xl bg-blue-600 px-12 py-5 text-2xl font-bold text-white hover:bg-blue-700">Next Question</button>
-            <button onClick={endGame} className="rounded-xl bg-red-500 px-12 py-5 text-2xl font-bold text-white hover:bg-red-600">End Game</button>
+          
+          {/* Visual indicator of the automatic transition */}
+          <div className="mt-12 flex flex-col items-center space-y-6">
+            <div className="text-2xl font-bold text-gray-500 animate-pulse">
+              Next question in {leaderboardTimeLeft}...
+            </div>
+            <div className="flex space-x-6">
+              <button onClick={nextQuestion} className="rounded-xl border-2 border-gray-300 px-8 py-3 text-lg font-bold text-gray-600 hover:bg-gray-100">Skip Delay</button>
+              <button onClick={endGame} className="rounded-xl bg-red-100 px-8 py-3 text-lg font-bold text-red-600 hover:bg-red-200">End Game Early</button>
+            </div>
           </div>
         </div>
       )}
@@ -269,7 +297,13 @@ export default function HostDashboard() {
         <div className="flex flex-grow flex-col items-center justify-center text-center">
           <h2 className="mb-6 text-7xl font-black text-gray-800">Game Over!</h2>
           <p className="mb-12 text-2xl text-gray-600">Scores have been saved to the database.</p>
-          <button onClick={() => setView('dashboard')} className="rounded-xl bg-blue-600 px-12 py-5 text-2xl font-bold text-white hover:bg-blue-700">
+          <button 
+            onClick={() => {
+              if (ws.current) ws.current.close();
+              setView('dashboard');
+            }} 
+            className="rounded-xl bg-blue-600 px-12 py-5 text-2xl font-bold text-white hover:bg-blue-700"
+          >
             Return to Dashboard
           </button>
         </div>
