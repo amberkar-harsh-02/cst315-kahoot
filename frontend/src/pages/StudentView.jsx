@@ -281,14 +281,19 @@ export default function StudentView() {
 
         {gameState === 'question_active' && (
           <div className="mx-auto grid h-full w-full max-w-5xl grid-cols-2 gap-4 pb-4">
-            {['red', 'blue', 'yellow', 'green'].map((color) => (
+            {['red', 'blue', 'yellow', 'green'].map((color, index) => (
               <button 
                 key={color} 
                 onClick={() => submitAnswer(color)} 
                 disabled={lockedAnswer !== null} 
-                className={`w-full h-full rounded-2xl shadow-lg transition-transform active:scale-95 ${lockedAnswer === color ? 'ring-8 ring-black ring-inset opacity-100' : 'hover:brightness-110'} ${lockedAnswer && lockedAnswer !== color ? 'opacity-30' : ''}`} 
+                className={`relative flex items-center justify-center w-full h-full rounded-2xl shadow-lg transition-transform active:scale-95 ${lockedAnswer === color ? 'ring-8 ring-black ring-inset opacity-100' : 'hover:brightness-110'} ${lockedAnswer && lockedAnswer !== color ? 'opacity-30' : ''}`} 
                 style={{ backgroundColor: color === 'yellow' ? '#fbbf24' : color }} 
-              />
+              >
+                {/* Massive centered number for colorblind support */}
+                <span className={`text-8xl font-black opacity-50 ${color === 'yellow' ? 'text-gray-900' : 'text-white'}`}>
+                  {index + 1}
+                </span>
+              </button>
             ))}
           </div>
         )}

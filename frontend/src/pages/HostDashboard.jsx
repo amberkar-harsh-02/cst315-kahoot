@@ -15,6 +15,7 @@ export default function HostDashboard() {
   const [leaderboard, setLeaderboard] = useState([]);
 
   const ws = useRef(null);
+  const fileInputRef = useRef(null);
   const navigate = useNavigate();
   const token = localStorage.getItem('kahoot_token');
 
@@ -29,6 +30,57 @@ export default function HostDashboard() {
     .then(data => setQuizzes(data))
     .catch(err => console.error(err));
   }, [token, navigate]);
+
+  const handleFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    try {
+      const res = await fetch('http://127.0.0.1:8000/quizzes/upload/', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+        body: formData
+      });
+      
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.detail || 'Upload failed');
+      }
+      
+      // Refresh the quiz list to show the newly uploaded quiz
+      const quizzesRes = await fetch('http://127.0.0.1:8000/quizzes/', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await quizzesRes.json();
+      setQuizzes(data);
+      alert("Quiz uploaded successfully!");
+      
+    } catch (err) {
+      alert(`Error: ${err.message}`);
+    }
+    
+    e.target.value = null; // Reset input so you can upload the same file again if needed
+  };
+
+  const deleteQuiz = async (quizId) => {
+    if (!window.confirm("Are you sure you want to delete this quiz? This cannot be undone.")) return;
+    
+    try {
+      const res = await fetch(`http://127.0.0.1:8000/quizzes/${quizId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!res.ok) throw new Error('Failed to delete quiz');
+      
+      // Remove it from the UI immediately
+      setQuizzes(quizzes.filter(q => q.id !== quizId));
+    } catch (err) {
+      alert(`Error: ${err.message}`);
+    }
+  };
 
   // Timer Logic (Feature 5)
   useEffect(() => {
@@ -83,8 +135,18 @@ export default function HostDashboard() {
         <div className="mx-auto w-full max-w-6xl">
           <div className="mb-10 flex items-center justify-between border-b pb-6">
             <h1 className="text-4xl font-black text-gray-800">My Quizzes</h1>
-            <div className="space-x-4">
-              <button onClick={() => navigate('/create')} className="rounded-lg bg-blue-600 px-6 py-3 font-bold text-white hover:bg-blue-700">
+            <div className="flex items-center space-x-4">
+              <button onClick={() => navigate('/analytics')} className="rounded-lg border-2 border-gray-300 px-6 py-3 font-bold text-gray-700 transition-colors hover:bg-gray-100">
+                View Analytics
+              </button>
+              
+              {/* Hidden File Input & Upload Trigger */}
+              <input type="file" accept=".json" ref={fileInputRef} onChange={handleFileUpload} className="hidden" />
+              <button onClick={() => fileInputRef.current.click()} className="rounded-lg bg-green-500 px-6 py-3 font-bold text-white transition-colors hover:bg-green-600">
+                Upload JSON
+              </button>
+              
+              <button onClick={() => navigate('/create')} className="rounded-lg bg-blue-600 px-6 py-3 font-bold text-white transition-colors hover:bg-blue-700">
                 + Create New Quiz
               </button>
               <button onClick={() => { localStorage.removeItem('kahoot_token'); navigate('/'); }} className="text-gray-500 hover:underline">
@@ -107,10 +169,14 @@ export default function HostDashboard() {
                     <button onClick={() => hostGame(quiz.id)} className="rounded-lg bg-green-500 py-3 font-bold text-white hover:bg-green-600">
                       Host Game
                     </button>
-                    {/* Add questions button route placeholder */}
-                    <button className="rounded-lg border-2 border-gray-200 py-3 font-bold text-gray-600 hover:bg-gray-50">
+                    <div className="flex space-x-3">
+                      <button className="rounded-lg border-2 border-gray-200 py-3 font-bold text-gray-600 hover:bg-gray-50">
                       Edit Quiz
                     </button>
+                    <button onClick={() => deleteQuiz(quiz.id)} className="flex-1 rounded-lg bg-red-100 py-2 font-bold text-red-600 hover:bg-red-200">
+                        Delete
+                    </button>
+                    </div>
                   </div>
                 </div>
               ))
@@ -152,9 +218,14 @@ export default function HostDashboard() {
           </div>
           
           <div className="grid flex-grow grid-cols-2 gap-6">
-            {['red', 'blue', 'yellow', 'green'].map((color) => (
-              <div key={color} className="flex items-center justify-center rounded-2xl p-8 text-4xl font-bold text-white shadow-md" style={{ backgroundColor: color === 'yellow' ? '#fbbf24' : color }}>
-                {currentQuestion.options[color]}
+            {['red', 'blue', 'yellow', 'green'].map((color, index) => (
+              <div 
+                key={color} 
+                className={`relative flex items-center rounded-2xl p-8 text-4xl font-bold shadow-md ${color === 'yellow' ? 'text-gray-900' : 'text-white'}`} 
+                style={{ backgroundColor: color === 'yellow' ? '#fbbf24' : color }}
+              >
+                <span className="mr-6 text-6xl opacity-70 font-black">{index + 1}</span>
+                <span>{currentQuestion.options[color]}</span>
               </div>
             ))}
           </div>

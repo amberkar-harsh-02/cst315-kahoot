@@ -1,4 +1,5 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Response, Query
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Response, Query, File, UploadFile
+import json
 from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
 from database import engine, SessionLocal
@@ -166,6 +167,111 @@ def create_quiz(quiz: schemas.QuizCreate, db: Session = Depends(get_db), current
     db.refresh(db_quiz)
     return db_quiz
 
+@app.post("/quizzes/upload/", response_model=schemas.Quiz)
+async def upload_quiz_json(
+    file: UploadFile = File(...), 
+    db: Session = Depends(get_db), 
+    current_user: models.User = Depends(get_current_professor)
+):
+    if not file.filename.endswith('.json'):
+        raise HTTPException(status_code=400, detail="Only .json files are allowed.")
+        
+    try:
+        contents = await file.read()
+        data = json.loads(contents)
+        
+        if "title" not in data or "questions" not in data:
+            raise ValueError("JSON must contain 'title' and 'questions' arrays.")
+            
+        # 1. Create the Quiz
+        db_quiz = models.Quiz(title=data["title"], owner_id=current_user.id)
+        db.add(db_quiz)
+        db.commit()
+        db.refresh(db_quiz)
+        
+        # 2. Iterate and create all Questions
+        for q in data["questions"]:
+            db_question = models.Question(
+                quiz_id=db_quiz.id,
+                text=q["text"],
+                option_red=q["option_red"],
+                option_blue=q["option_blue"],
+                option_yellow=q["option_yellow"],
+                option_green=q["option_green"],
+                correct_option=q["correct_option"],
+                time_limit_seconds=q.get("time_limit_seconds", 15)
+            )
+            db.add(db_question)
+        
+        db.commit()
+        db.refresh(db_quiz)
+        return db_quiz
+        
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON format.")
+    except KeyError as e:
+        raise HTTPException(status_code=400, detail=f"Missing required field in question: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
+
+# --- NEW BUILDER & DELETE ROUTES ---
+
+# Pydantic models for the visual builder payload
+class QuestionBuilderItem(BaseModel):
+    text: str
+    option_red: str
+    option_blue: str
+    option_yellow: str
+    option_green: str
+    correct_option: str
+    time_limit_seconds: int = 15
+
+class FullQuizPayload(BaseModel):
+    title: str
+    questions: list[QuestionBuilderItem]
+
+@app.post("/quizzes/builder", response_model=schemas.Quiz)
+def create_quiz_from_builder(payload: FullQuizPayload, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_professor)):
+    # 1. Create the Quiz
+    db_quiz = models.Quiz(title=payload.title, owner_id=current_user.id)
+    db.add(db_quiz)
+    db.commit()
+    db.refresh(db_quiz)
+    
+    # 2. Add all questions
+    for q in payload.questions:
+        db_question = models.Question(
+            quiz_id=db_quiz.id,
+            text=q.text,
+            option_red=q.option_red,
+            option_blue=q.option_blue,
+            option_yellow=q.option_yellow,
+            option_green=q.option_green,
+            correct_option=q.correct_option,
+            time_limit_seconds=q.time_limit_seconds
+        )
+        db.add(db_question)
+    
+    db.commit()
+    db.refresh(db_quiz)
+    return db_quiz
+
+@app.delete("/quizzes/{quiz_id}")
+def delete_quiz(quiz_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_professor)):
+    quiz = db.query(models.Quiz).filter(models.Quiz.id == quiz_id).first()
+    
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found.")
+    if quiz.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to delete this quiz.")
+        
+    # Delete associated questions first, then the quiz
+    db.query(models.Question).filter(models.Question.quiz_id == quiz_id).delete()
+    db.delete(quiz)
+    db.commit()
+    
+    return {"detail": "Quiz deleted successfully"}
+
 @app.get("/quizzes/", response_model=list[schemas.Quiz])
 def get_all_quizzes(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_professor)):
     return db.query(models.Quiz).filter(models.Quiz.owner_id == current_user.id).all()
@@ -207,39 +313,104 @@ def download_receipt(session_id: int, student_name: str, db: Session = Depends(g
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
 
+@app.get("/sessions/")
+def get_past_sessions(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_professor)):
+    # 1. Get all quizzes owned by the professor
+    quizzes = db.query(models.Quiz).filter(models.Quiz.owner_id == current_user.id).all()
+    quiz_ids = [q.id for q in quizzes]
+    
+    # 2. Get all game sessions for those quizzes
+    sessions = db.query(models.GameSession).filter(models.GameSession.quiz_id.in_(quiz_ids)).order_by(models.GameSession.id.desc()).all()
+    
+    result = []
+    for s in sessions:
+        quiz = db.query(models.Quiz).filter(models.Quiz.id == s.quiz_id).first()
+        player_count = db.query(models.StudentResult).filter(models.StudentResult.session_id == s.id).count()
+        result.append({
+            "id": s.id,
+            "quiz_title": quiz.title if quiz else "Unknown Quiz",
+            "room_code": s.room_code,
+            "player_count": player_count
+        })
+    return result
+
+
 @app.get("/analytics/{session_id}")
 def get_session_analytics(session_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_professor)):
     game_session = db.query(models.GameSession).filter(models.GameSession.id == session_id).first()
     if not game_session:
         raise HTTPException(status_code=404, detail="Game session not found.")
         
-    results = db.query(models.StudentResult).filter(models.StudentResult.session_id == session_id).all()
-    
-    report = {
-        "session_id": game_session.id,
-        "quiz_id": game_session.quiz_id,
-        "total_students_participated": len(results),
-        "student_breakdowns": []
-    }
-    
-    for student in results:
-        answers = db.query(models.StudentAnswer).filter(models.StudentAnswer.result_id == student.id).all()
+    quiz = db.query(models.Quiz).filter(models.Quiz.id == game_session.quiz_id).first()
+    if quiz.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to view this session.")
         
-        student_data = {
+    results = db.query(models.StudentResult).filter(models.StudentResult.session_id == session_id).all()
+    questions = db.query(models.Question).filter(models.Question.quiz_id == quiz.id).all()
+    
+    total_students = len(results)
+    
+    # --- 1. Class Overview ---
+    average_score = sum(r.total_score for r in results) / total_students if total_students > 0 else 0
+    total_possible_correct = total_students * len(questions)
+    total_actual_correct = sum(r.correct_answers for r in results)
+    average_accuracy = (total_actual_correct / total_possible_correct * 100) if total_possible_correct > 0 else 0
+
+    # --- 2. Question Breakdown ---
+    question_stats = []
+    for q in questions:
+        answers = db.query(models.StudentAnswer).join(models.StudentResult).filter(
+            models.StudentResult.session_id == session_id,
+            models.StudentAnswer.question_id == q.id
+        ).all()
+        
+        correct_count = sum(1 for a in answers if a.is_correct)
+        incorrect_count = len(answers) - correct_count
+        q_accuracy = (correct_count / len(answers) * 100) if answers else 0
+        
+        spread = {"red": 0, "blue": 0, "yellow": 0, "green": 0}
+        for a in answers:
+            if a.selected_option in spread:
+                spread[a.selected_option] += 1
+                
+        question_stats.append({
+            "question_id": q.id,
+            "text": q.text,
+            "correct_count": correct_count,
+            "incorrect_count": incorrect_count,
+            "accuracy": round(q_accuracy),
+            "spread": spread
+        })
+
+    # --- 3. Student Roster ---
+    student_breakdowns = []
+    for student in results:
+        student_answers = db.query(models.StudentAnswer).filter(models.StudentAnswer.result_id == student.id).all()
+        student_breakdowns.append({
             "name": student.student_name,
             "final_score": student.total_score,
             "total_correct": student.correct_answers,
+            "accuracy": round((student.correct_answers / len(questions) * 100) if questions else 0),
             "question_history": [
                 {
                     "question_id": ans.question_id,
                     "selected_option": ans.selected_option,
                     "is_correct": bool(ans.is_correct)
-                } for ans in answers
+                } for ans in student_answers
             ]
-        }
-        report["student_breakdowns"].append(student_data)
+        })
         
-    return report
+    return {
+        "session_id": game_session.id,
+        "quiz_title": quiz.title,
+        "overview": {
+            "total_students": total_students,
+            "average_score": round(average_score),
+            "average_accuracy": round(average_accuracy)
+        },
+        "questions": question_stats,
+        "students": sorted(student_breakdowns, key=lambda x: x["final_score"], reverse=True)
+    }
 
 
 # --- WEBSOCKETS ---
